@@ -1,4 +1,5 @@
 #include "channel.h"
+#include <pthread.h>
 
 
 typedef struct ch_node {
@@ -118,23 +119,123 @@ size_t chan_cap(chan_t* ch) {
     return ch->buf_size;
 }
 
-void chan_push(chan_t* ch, void* data) {
+void chan_send(chan_t* ch, void* data) {
     pthread_mutex_lock(&ch->mutex);
     ch_list_push(ch, data);
-    pthread_cond_signal(&ch->cond);
+    pthread_cond_broadcast(&ch->cond);
     while (ch->list.size > ch->buf_size) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
     }
     pthread_mutex_unlock(&ch->mutex);
 }
 
-void* chan_pop(chan_t* ch) {
+void* chan_recv(chan_t* ch) {
     pthread_mutex_lock(&ch->mutex);
     while (ch->list.size == 0) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
     }
     void* data = ch_list_pop(ch);
-    pthread_cond_signal(&ch->cond);
+    pthread_cond_broadcast(&ch->cond);
     pthread_mutex_unlock(&ch->mutex);
     return data;
+}
+
+bool chan_full(chan_t* ch) {
+    bool res;
+    pthread_mutex_lock(&ch->mutex);
+    if (ch->list.size > ch->buf_size) {
+        res = true;
+    } else {
+        res = false;
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return res;
+}
+
+bool chan_send_will_block(chan_t* ch) {
+    bool res;
+    pthread_mutex_lock(&ch->mutex);
+    if (ch->list.size >= ch->buf_size) {
+        res = true;
+    } else {
+        res = false;
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return res;
+}
+
+bool chan_recv_will_block(chan_t* ch) {
+    bool res;
+    pthread_mutex_lock(&ch->mutex);
+    if (ch->list.size == 0) {
+        res = true;
+    } else {
+        res = false;
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return res;    
+}
+
+bool chan_try_send(chan_t* ch, void* data) {
+    bool res;
+    pthread_mutex_lock(&ch->mutex);
+    if (ch->list.size >= ch->buf_size) {
+        res = false;
+    } else {
+        res = true;
+        ch_list_push(ch, data);
+        pthread_cond_broadcast(&ch->cond);
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return res;
+}
+
+bool chan_try_recv(chan_t* ch, void** result) {
+    bool res;
+    pthread_mutex_lock(&ch->mutex);
+    if (ch->list.size == 0) {
+        res = false;
+    } else {
+        res = true;
+        *result = ch_list_pop(ch);
+        pthread_cond_broadcast(&ch->cond);
+    }
+    pthread_mutex_unlock(&ch->mutex);
+    return res;
+}
+
+int chan_select(size_t num, chan_select_t* chs, bool has_default) {
+    chan_t* ch = NULL;
+    for (;;) {
+        for (size_t i = 0; i < num; i++) {
+            chan_select_t chan = chs[i];
+            ch = chan.ch;
+            pthread_mutex_lock(&ch->mutex);
+            if (chan.is_send == true) {
+                if (ch->list.size >= ch->buf_size) {
+                    pthread_mutex_unlock(&ch->mutex);
+                    continue;
+                } else {
+                    ch_list_push(ch, chan.data);
+                    pthread_cond_broadcast(&ch->cond);
+                    pthread_mutex_unlock(&ch->mutex);
+                    return i;
+                }
+            } else {
+                if (ch->list.size == 0) {
+                    pthread_mutex_unlock(&ch->mutex);
+                    continue;
+                } else {
+                    *chan.result = ch_list_pop(ch);
+                    pthread_cond_broadcast(&ch->cond);
+                    pthread_mutex_unlock(&ch->mutex);
+                    return i;
+                }
+            }
+        }
+        if (has_default == true) {
+            return num;
+        }
+    }
+    return -1;
 }

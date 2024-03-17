@@ -9,6 +9,8 @@ chan: $(SRC)
 static: $(SRC) 
 	$(CC) $(CFLAG) $(SRC) -c
 
+clean: 
+	rm *.o *.so *.dll
 
 test: test.c 
 	$(CC) $(CFLAG) channel.o $< -o $@ $(LIB) -fopenmp
