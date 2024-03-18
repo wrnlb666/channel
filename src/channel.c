@@ -43,7 +43,7 @@ static inline ch_node_t* ch_node_init(chan_t* ch, void* data) {
     return node;
 }
 
-static inline void ch_list_push(chan_t* ch, void* data) {
+static inline void ch_list_enqueue(chan_t* ch, void* data) {
     ch_list_t* list = &ch->list;
     if (list->head == NULL) {
         list->head = list->tail = ch_node_init(ch, data);
@@ -57,7 +57,7 @@ static inline void ch_list_push(chan_t* ch, void* data) {
 }
 
 
-static inline void* ch_list_pop(chan_t* ch) {
+static inline void* ch_list_dequeue(chan_t* ch) {
     ch_list_t* list = &ch->list;
     ch_list_t* free_list = &ch->free_list;
 
@@ -121,7 +121,7 @@ size_t chan_cap(chan_t* ch) {
 
 void chan_send(chan_t* ch, void* data) {
     pthread_mutex_lock(&ch->mutex);
-    ch_list_push(ch, data);
+    ch_list_enqueue(ch, data);
     pthread_cond_broadcast(&ch->cond);
     while (ch->list.size > ch->buf_size) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
@@ -134,7 +134,7 @@ void* chan_recv(chan_t* ch) {
     while (ch->list.size == 0) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
     }
-    void* data = ch_list_pop(ch);
+    void* data = ch_list_dequeue(ch);
     pthread_cond_broadcast(&ch->cond);
     pthread_mutex_unlock(&ch->mutex);
     return data;
@@ -183,7 +183,7 @@ bool chan_try_send(chan_t* ch, void* data) {
         res = false;
     } else {
         res = true;
-        ch_list_push(ch, data);
+        ch_list_enqueue(ch, data);
         pthread_cond_broadcast(&ch->cond);
     }
     pthread_mutex_unlock(&ch->mutex);
@@ -197,7 +197,7 @@ bool chan_try_recv(chan_t* ch, void** result) {
         res = false;
     } else {
         res = true;
-        *result = ch_list_pop(ch);
+        *result = ch_list_dequeue(ch);
         pthread_cond_broadcast(&ch->cond);
     }
     pthread_mutex_unlock(&ch->mutex);
@@ -216,7 +216,7 @@ int chan_select(size_t num, chan_select_t* chs, bool has_default) {
                     pthread_mutex_unlock(&ch->mutex);
                     continue;
                 } else {
-                    ch_list_push(ch, chan.data);
+                    ch_list_enqueue(ch, chan.data);
                     pthread_cond_broadcast(&ch->cond);
                     pthread_mutex_unlock(&ch->mutex);
                     return i;
@@ -226,7 +226,7 @@ int chan_select(size_t num, chan_select_t* chs, bool has_default) {
                     pthread_mutex_unlock(&ch->mutex);
                     continue;
                 } else {
-                    *chan.result = ch_list_pop(ch);
+                    *chan.result = ch_list_dequeue(ch);
                     pthread_cond_broadcast(&ch->cond);
                     pthread_mutex_unlock(&ch->mutex);
                     return i;
