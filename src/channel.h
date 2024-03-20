@@ -33,7 +33,8 @@ void    chan_send(chan_t* ch, void* data);
 void*   chan_recv(chan_t* ch);
 
 // API for checking if the speficied channel may block
-bool    chan_full(chan_t* ch);
+bool    chan_send_blocked(chan_t* ch);
+bool    chan_recv_blocked(chan_t* ch);
 bool    chan_send_will_block(chan_t* ch);
 bool    chan_recv_will_block(chan_t* ch);
 

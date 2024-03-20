@@ -16,6 +16,8 @@ typedef struct ch_list {
 typedef struct chan {
     pthread_mutex_t     mutex;
     pthread_cond_t      cond;
+    size_t              send_waiting;
+    size_t              recv_waiting;
     size_t              buf_size;
     ch_list_t           list;       // buffered list
     ch_list_t           free_list;  // free list for buffered list, reduce allocation frequency
@@ -96,6 +98,8 @@ chan_t* chan_init(size_t buf_size) {
         free(ch);
         return NULL;
     }
+    ch->send_waiting = 0;
+    ch->recv_waiting = 0;
     ch->buf_size = buf_size;
     ch->list = (ch_list_t){};
     ch->free_list = (ch_list_t){};
@@ -107,6 +111,7 @@ void chan_deinit(chan_t* ch) {
     pthread_cond_destroy(&ch->cond);
     ch_list_deinit(&ch->list);
     ch_list_deinit(&ch->free_list);
+    pthread_mutex_unlock(&ch->mutex);
     pthread_mutex_destroy(&ch->mutex);
     free(ch);
 }
@@ -122,40 +127,40 @@ size_t chan_cap(chan_t* ch) {
 void chan_send(chan_t* ch, void* data) {
     pthread_mutex_lock(&ch->mutex);
     ch_list_enqueue(ch, data);
+    ch->send_waiting += 1;
     pthread_cond_broadcast(&ch->cond);
     while (ch->list.size > ch->buf_size) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
     }
+    ch->send_waiting -= 1;
     pthread_mutex_unlock(&ch->mutex);
 }
 
 void* chan_recv(chan_t* ch) {
     pthread_mutex_lock(&ch->mutex);
+    ch->recv_waiting += 1;
     while (ch->list.size == 0) {
         pthread_cond_wait(&ch->cond, &ch->mutex);
     }
     void* data = ch_list_dequeue(ch);
+    ch->recv_waiting -= 1;
     pthread_cond_broadcast(&ch->cond);
     pthread_mutex_unlock(&ch->mutex);
     return data;
 }
 
-bool chan_full(chan_t* ch) {
-    bool res;
-    pthread_mutex_lock(&ch->mutex);
-    if (ch->list.size > ch->buf_size) {
-        res = true;
-    } else {
-        res = false;
-    }
-    pthread_mutex_unlock(&ch->mutex);
-    return res;
+bool chan_send_blocked(chan_t* ch) {
+    return (ch->send_waiting != 0);
+}
+
+bool chan_recv_blocked(chan_t* ch) {
+    return (ch->recv_waiting != 0);
 }
 
 bool chan_send_will_block(chan_t* ch) {
     bool res;
     pthread_mutex_lock(&ch->mutex);
-    if (ch->list.size >= ch->buf_size) {
+    if (ch->list.size >= ch->buf_size && ch->recv_waiting == 0) {
         res = true;
     } else {
         res = false;
@@ -167,7 +172,7 @@ bool chan_send_will_block(chan_t* ch) {
 bool chan_recv_will_block(chan_t* ch) {
     bool res;
     pthread_mutex_lock(&ch->mutex);
-    if (ch->list.size == 0) {
+    if (ch->list.size == 0 && ch->send_waiting == 0) {
         res = true;
     } else {
         res = false;
@@ -179,7 +184,7 @@ bool chan_recv_will_block(chan_t* ch) {
 bool chan_try_send(chan_t* ch, void* data) {
     bool res;
     pthread_mutex_lock(&ch->mutex);
-    if (ch->list.size >= ch->buf_size) {
+    if (ch->list.size >= ch->buf_size && ch->recv_waiting == 0) {
         res = false;
     } else {
         res = true;
@@ -193,7 +198,7 @@ bool chan_try_send(chan_t* ch, void* data) {
 bool chan_try_recv(chan_t* ch, void** result) {
     bool res;
     pthread_mutex_lock(&ch->mutex);
-    if (ch->list.size == 0) {
+    if (ch->list.size == 0 && ch->send_waiting == 0) {
         res = false;
     } else {
         res = true;
@@ -212,7 +217,7 @@ int chan_select(size_t num, chan_select_t* chs, bool has_default) {
             ch = chan.ch;
             pthread_mutex_lock(&ch->mutex);
             if (chan.is_send == true) {
-                if (ch->list.size >= ch->buf_size) {
+                if (ch->list.size >= ch->buf_size && ch->recv_waiting == 0) {
                     pthread_mutex_unlock(&ch->mutex);
                     continue;
                 } else {
@@ -222,7 +227,7 @@ int chan_select(size_t num, chan_select_t* chs, bool has_default) {
                     return i;
                 }
             } else {
-                if (ch->list.size == 0) {
+                if (ch->list.size == 0 && ch->send_waiting == 0) {
                     pthread_mutex_unlock(&ch->mutex);
                     continue;
                 } else {
